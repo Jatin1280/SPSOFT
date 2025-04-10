@@ -8,9 +8,6 @@ const productionUrls = [
   'https://splioqurpro-rjkh1ajuc-spfinances-projects.vercel.app'
 ];
 const developmentUrl = 'http://localhost:5173';
-const redirectUrl = process.env.NODE_ENV === 'production' 
-  ? productionUrls[0] // Using the main production URL
-  : developmentUrl;
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
@@ -32,4 +29,12 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
   db: {
     schema: 'public'
   }
-}); 
+});
+
+// Export the current site URL for use in other components
+export const getCurrentSiteUrl = () => {
+  if (process.env.NODE_ENV === 'production') {
+    return productionUrls[0];
+  }
+  return developmentUrl;
+}; 

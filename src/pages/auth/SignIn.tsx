@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../../lib/supabase';
+import { supabase, getCurrentSiteUrl } from '../../lib/supabase';
 import { Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -33,10 +33,11 @@ export default function SignIn() {
 
   const handleGoogleSignIn = async () => {
     try {
+      const currentSiteUrl = getCurrentSiteUrl();
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `${currentSiteUrl}/auth/callback`,
           queryParams: {
             access_type: 'offline',
             prompt: 'consent'
