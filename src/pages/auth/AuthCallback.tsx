@@ -13,46 +13,61 @@ export default function AuthCallback() {
       try {
         // Check if we have a hash in the URL
         if (location.hash) {
+          // Parse the hash parameters
           const hashParams = new URLSearchParams(location.hash.substring(1));
           const accessToken = hashParams.get('access_token');
           const refreshToken = hashParams.get('refresh_token');
-          
-          if (!accessToken) throw new Error('No access token found');
+          const providerToken = hashParams.get('provider_token');
 
-          // Set the session manually
+          if (!accessToken) {
+            throw new Error('No access token found');
+          }
+
+          // Set the session with the tokens
           const { data: { session }, error } = await supabase.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken || ''
           });
 
-          if (error) throw error;
+          if (error) {
+            throw error;
+          }
 
           if (session) {
+            // Store additional tokens if needed
+            if (providerToken) {
+              localStorage.setItem('provider_token', providerToken);
+            }
+
             toast.success('Signed in successfully');
+            // Use replace to prevent going back to the callback URL
             navigate('/', { replace: true });
           } else {
             throw new Error('No session found');
           }
         } else {
-          // If no hash, try to get existing session
+          // If no hash, check for existing session
           const { data: { session }, error } = await supabase.auth.getSession();
           
-          if (error) throw error;
+          if (error) {
+            throw error;
+          }
 
           if (session) {
-            toast.success('Signed in successfully');
+            toast.success('Already signed in');
             navigate('/', { replace: true });
           } else {
             throw new Error('No session found');
           }
         }
       } catch (error: any) {
-        console.error('Error handling auth callback:', error);
-        toast.error('Failed to complete authentication');
+        console.error('Error in auth callback:', error);
+        toast.error(error.message || 'Failed to complete authentication');
         navigate('/auth/signin', { replace: true });
       }
     };
 
+    // Execute the callback handler
     handleAuthCallback();
   }, [navigate, location]);
 
