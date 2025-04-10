@@ -40,7 +40,8 @@ export default function SignIn() {
           redirectTo: `${currentSiteUrl}/auth/callback`,
           queryParams: {
             access_type: 'offline',
-            prompt: 'consent'
+            prompt: 'consent',
+            response_type: 'token'
           }
         }
       });

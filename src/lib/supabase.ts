@@ -9,13 +9,24 @@ const productionUrls = [
 ];
 const developmentUrl = 'http://localhost:5173';
 
+// Get the current site URL based on the window location
+const getCurrentSiteUrl = () => {
+  if (typeof window === 'undefined') return developmentUrl;
+  
+  const currentUrl = window.location.origin;
+  if (productionUrls.includes(currentUrl)) {
+    return currentUrl;
+  }
+  return developmentUrl;
+};
+
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
     flowType: 'implicit',
-    storage: window.localStorage,
+    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
     storageKey: 'supabase.auth.token',
     debug: process.env.NODE_ENV === 'development'
   },
@@ -31,10 +42,5 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
   }
 });
 
-// Export the current site URL for use in other components
-export const getCurrentSiteUrl = () => {
-  if (process.env.NODE_ENV === 'production') {
-    return productionUrls[0];
-  }
-  return developmentUrl;
-}; 
+// Export the URL helper function
+export { getCurrentSiteUrl }; 
