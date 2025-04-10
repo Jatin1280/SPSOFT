@@ -39,8 +39,7 @@ export default function SignIn() {
           redirectTo: `${window.location.origin}/auth/callback`,
           queryParams: {
             access_type: 'offline',
-            prompt: 'consent',
-            hd: 'domain.com'
+            prompt: 'consent'
           }
         }
       });
