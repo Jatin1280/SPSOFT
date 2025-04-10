@@ -40,12 +40,14 @@ export default function SignIn() {
           queryParams: {
             access_type: 'offline',
             prompt: 'consent'
-          }
+          },
+          skipBrowserRedirect: false
         }
       });
 
       if (error) throw error;
     } catch (error: any) {
+      console.error('Google sign-in error:', error);
       toast.error(error.message || 'Failed to sign in with Google');
     }
   };

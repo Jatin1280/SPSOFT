@@ -14,7 +14,8 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
     detectSessionInUrl: true,
     flowType: 'pkce',
     storage: window.localStorage,
-    debug: process.env.NODE_ENV === 'development'
+    debug: process.env.NODE_ENV === 'development',
+    storageKey: 'supabase.auth.token'
   },
   global: {
     headers: {

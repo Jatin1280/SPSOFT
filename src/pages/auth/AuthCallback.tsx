@@ -2,20 +2,37 @@ import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { Loader2 } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 export default function AuthCallback() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN') {
-        navigate('/');
-      }
-    });
+    const handleAuthCallback = async () => {
+      try {
+        // Get the session from the URL hash
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          throw error;
+        }
 
-    return () => {
-      authListener?.subscription.unsubscribe();
+        if (session) {
+          // Store the session
+          await supabase.auth.setSession(session);
+          toast.success('Signed in successfully');
+          navigate('/');
+        } else {
+          throw new Error('No session found');
+        }
+      } catch (error: any) {
+        console.error('Error handling auth callback:', error);
+        toast.error('Failed to complete authentication');
+        navigate('/auth/signin');
+      }
     };
+
+    handleAuthCallback();
   }, [navigate]);
 
   return (
