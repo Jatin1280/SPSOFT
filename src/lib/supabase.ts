@@ -9,13 +9,13 @@ const redirectUrl = process.env.NODE_ENV === 'production' ? productionUrl : deve
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
-    persistSession: true,
     autoRefreshToken: true,
+    persistSession: true,
     detectSessionInUrl: true,
-    flowType: 'pkce',
+    flowType: 'implicit',
     storage: window.localStorage,
-    debug: process.env.NODE_ENV === 'development',
-    storageKey: 'supabase.auth.token'
+    storageKey: 'supabase.auth.token',
+    debug: process.env.NODE_ENV === 'development'
   },
   global: {
     headers: {
