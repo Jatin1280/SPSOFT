@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useBar } from '../../context/BarContext';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -46,7 +46,9 @@ interface InventoryItem {
 export default function Inventory() {
   const { selectedBar } = useBar();
   const [date, setDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
+  const [initialLoading, setInitialLoading] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
   const [autoSaving, setAutoSaving] = useState(false);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [displayedInventory, setDisplayedInventory] = useState<InventoryItem[]>([]);
@@ -72,13 +74,181 @@ export default function Inventory() {
     brandName: '',
   });
 
-  useEffect(() => {
-    if (selectedBar) {
-      fetchBrands();
-      fetchInventory();
+  const initializeData = useCallback(async () => {
+    if (!selectedBar || !date) return;
+    
+    setInitialLoading(true);
+    setLoadingProgress(0);
+    
+    try {
+      // First get the total count of brands
+      const { count, error: countError } = await supabase
+        .from('brands')
+        .select('*', { count: 'exact', head: true });
+
+      if (countError) throw countError;
+      if (!count) {
+        toast.error('No brands found');
+        setInitialLoading(false);
+        return;
+      }
+
+      // Show initial loading toast
+      toast.loading('Loading inventory data...', { id: 'loading-inventory' });
+      setLoadingProgress(10);
+
+      // Calculate previous day's date
+      const previousDay = format(addDays(new Date(date), -1), 'yyyy-MM-dd');
+
+      // Fetch previous day's inventory to get closing quantities
+      const { data: previousInventory, error: previousError } = await supabase
+        .from('inventory')
+        .select('brand_id, closing_qty')
+        .eq('bar_id', selectedBar.id)
+        .eq('date', previousDay);
+
+      if (previousError && previousError.code !== 'PGRST116') {
+        throw previousError;
+      }
+
+      setLoadingProgress(30);
+
+      // Create a map of previous day's closing quantities
+      const previousClosingQtys = new Map(
+        (previousInventory || []).map(item => [item.brand_id, item.closing_qty])
+      );
+
+      // Fetch TP entries and daily sales for the current date
+      const [receiptQtys, saleQtys] = await Promise.all([
+        fetchTPEntries(date),
+        fetchDailySales(date)
+      ]);
+
+      setLoadingProgress(50);
+
+      // Get all brand IDs that have activity
+      const activeBrandIds = new Set([
+        ...(previousInventory || []).map(item => item.brand_id),
+        ...Array.from(receiptQtys.keys()),
+        ...Array.from(saleQtys.keys())
+      ]);
+
+      // Fetch existing inventory for the selected date
+      const { data: existingInventory, error: inventoryError } = await supabase
+        .from('inventory')
+        .select(`
+          *,
+          brands (
+            brand_name,
+            item_code,
+            sizes,
+            mrp,
+            category
+          )
+        `)
+        .eq('bar_id', selectedBar.id)
+        .eq('date', date);
+
+      if (inventoryError) throw inventoryError;
+
+      setLoadingProgress(70);
+
+      // Process inventory data
+      if (existingInventory && existingInventory.length > 0) {
+        const updatedInventory = existingInventory.map((item) => {
+          const receipt_qty = receiptQtys.get(item.brand_id) || 0;
+          const sale_qty = saleQtys.get(item.brand_id) || 0;
+          return {
+            id: item.id,
+            brand_id: item.brand_id,
+            brand_name: item.brands.brand_name,
+            item_code: item.brands.item_code,
+            sizes: item.brands.sizes,
+            mrp: item.brands.mrp,
+            category: item.brands.category,
+            opening_qty: item.opening_qty,
+            receipt_qty,
+            sale_qty,
+            closing_qty: item.opening_qty + receipt_qty - sale_qty,
+          };
+        });
+
+        // Fetch brands that have TP entries but no existing inventory
+        const newBrandIds = Array.from(receiptQtys.keys()).filter(
+          brandId => !existingInventory.some(item => item.brand_id === brandId)
+        );
+
+        setLoadingProgress(85);
+
+        if (newBrandIds.length > 0) {
+          const { data: newBrands } = await supabase
+            .from('brands')
+            .select('*')
+            .in('id', newBrandIds);
+
+          if (newBrands) {
+            const newInventoryItems = newBrands.map(brand => ({
+              brand_id: brand.id,
+              brand_name: brand.brand_name,
+              item_code: brand.item_code,
+              sizes: brand.sizes,
+              mrp: brand.mrp,
+              category: brand.category,
+              opening_qty: previousClosingQtys.get(brand.id) || 0,
+              receipt_qty: receiptQtys.get(brand.id) || 0,
+              sale_qty: saleQtys.get(brand.id) || 0,
+              closing_qty: (previousClosingQtys.get(brand.id) || 0) + (receiptQtys.get(brand.id) || 0) - (saleQtys.get(brand.id) || 0)
+            }));
+
+            setInventory([...updatedInventory, ...newInventoryItems]);
+          }
+        } else {
+          setInventory(updatedInventory);
+        }
+      } else {
+        // Fetch all brands that have activity
+        const { data: activeBrands } = await supabase
+          .from('brands')
+          .select('*')
+          .in('id', Array.from(activeBrandIds));
+
+        setLoadingProgress(95);
+
+        if (activeBrands) {
+          const newInventory = activeBrands.map(brand => ({
+            brand_id: brand.id,
+            brand_name: brand.brand_name,
+            item_code: brand.item_code,
+            sizes: brand.sizes,
+            mrp: brand.mrp,
+            category: brand.category,
+            opening_qty: previousClosingQtys.get(brand.id) || 0,
+            receipt_qty: receiptQtys.get(brand.id) || 0,
+            sale_qty: saleQtys.get(brand.id) || 0,
+            closing_qty: (previousClosingQtys.get(brand.id) || 0) + (receiptQtys.get(brand.id) || 0) - (saleQtys.get(brand.id) || 0)
+          }));
+
+          setInventory(newInventory);
+        }
+      }
+
+      setLoadingProgress(100);
+      toast.success('Successfully loaded inventory data', { id: 'loading-inventory' });
+
+    } catch (error) {
+      console.error('Error initializing inventory:', error);
+      toast.error('Failed to load inventory data');
+    } finally {
+      setInitialLoading(false);
     }
   }, [selectedBar, date]);
-  
+
+  useEffect(() => {
+    if (selectedBar) {
+      initializeData();
+    }
+  }, [selectedBar, date, initializeData]);
+
   // Effect for filtering and pagination
   useEffect(() => {
     let result = [...inventory];
@@ -274,143 +444,6 @@ export default function Inventory() {
     }
   };
 
-  const fetchInventory = async () => {
-    if (!selectedBar || !date) return;
-
-    setLoading(true);
-    try {
-      // Calculate previous day's date
-      const previousDay = format(addDays(new Date(date), -1), 'yyyy-MM-dd');
-
-      // Fetch previous day's inventory to get closing quantities
-      const { data: previousInventory, error: previousError } = await supabase
-        .from('inventory')
-        .select('brand_id, closing_qty')
-        .eq('bar_id', selectedBar.id)
-        .eq('date', previousDay);
-
-      if (previousError && previousError.code !== 'PGRST116') {
-        throw previousError;
-      }
-
-      // Create a map of previous day's closing quantities
-      const previousClosingQtys = new Map(
-        (previousInventory || []).map(item => [item.brand_id, item.closing_qty])
-      );
-
-      // Fetch TP entries and daily sales for the current date
-      const [receiptQtys, saleQtys] = await Promise.all([
-        fetchTPEntries(date),
-        fetchDailySales(date)
-      ]);
-
-      // Get all brand IDs that have activity (previous inventory, receipts, or sales)
-      const activeBrandIds = new Set([
-        ...(previousInventory || []).map(item => item.brand_id),
-        ...Array.from(receiptQtys.keys()),
-        ...Array.from(saleQtys.keys())
-      ]);
-
-      // Fetch existing inventory for the selected date
-      const { data: existingInventory, error: inventoryError } = await supabase
-        .from('inventory')
-        .select(`
-          *,
-          brands (
-            brand_name,
-            item_code,
-            sizes,
-            mrp,
-            category
-          )
-        `)
-        .eq('bar_id', selectedBar.id)
-        .eq('date', date);
-
-      if (inventoryError) throw inventoryError;
-
-      // If inventory exists, use it but update receipt and sale quantities
-      if (existingInventory && existingInventory.length > 0) {
-        const updatedInventory = existingInventory.map((item) => {
-          const receipt_qty = receiptQtys.get(item.brand_id) || 0;
-          const sale_qty = saleQtys.get(item.brand_id) || 0;
-          return {
-            id: item.id,
-            brand_id: item.brand_id,
-            brand_name: item.brands.brand_name,
-            item_code: item.brands.item_code,
-            sizes: item.brands.sizes,
-            mrp: item.brands.mrp,
-            category: item.brands.category,
-            opening_qty: item.opening_qty,
-            receipt_qty,
-            sale_qty,
-            closing_qty: item.opening_qty + receipt_qty - sale_qty,
-          };
-        });
-
-        // Fetch brands that have TP entries but no existing inventory
-        const newBrandIds = Array.from(receiptQtys.keys()).filter(
-          brandId => !existingInventory.some(item => item.brand_id === brandId)
-        );
-
-        if (newBrandIds.length > 0) {
-          const { data: newBrands } = await supabase
-            .from('brands')
-            .select('*')
-            .in('id', newBrandIds);
-
-          if (newBrands) {
-            const newInventoryItems = newBrands.map(brand => ({
-              brand_id: brand.id,
-              brand_name: brand.brand_name,
-              item_code: brand.item_code,
-              sizes: brand.sizes,
-              mrp: brand.mrp,
-              category: brand.category,
-              opening_qty: previousClosingQtys.get(brand.id) || 0,
-              receipt_qty: receiptQtys.get(brand.id) || 0,
-              sale_qty: saleQtys.get(brand.id) || 0,
-              closing_qty: (previousClosingQtys.get(brand.id) || 0) + (receiptQtys.get(brand.id) || 0) - (saleQtys.get(brand.id) || 0)
-            }));
-
-            setInventory([...updatedInventory, ...newInventoryItems]);
-          }
-        } else {
-          setInventory(updatedInventory);
-        }
-      } else {
-        // Fetch all brands that have activity
-        const { data: activeBrands } = await supabase
-          .from('brands')
-          .select('*')
-          .in('id', Array.from(activeBrandIds));
-
-        if (activeBrands) {
-          const newInventory = activeBrands.map(brand => ({
-            brand_id: brand.id,
-            brand_name: brand.brand_name,
-            item_code: brand.item_code,
-            sizes: brand.sizes,
-            mrp: brand.mrp,
-            category: brand.category,
-            opening_qty: previousClosingQtys.get(brand.id) || 0,
-            receipt_qty: receiptQtys.get(brand.id) || 0,
-            sale_qty: saleQtys.get(brand.id) || 0,
-            closing_qty: (previousClosingQtys.get(brand.id) || 0) + (receiptQtys.get(brand.id) || 0) - (saleQtys.get(brand.id) || 0)
-          }));
-
-          setInventory(newInventory);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching inventory:', error);
-      toast.error('Failed to fetch inventory');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const autoSaveInventory = async () => {
     if (!selectedBar || !date) return;
 
@@ -515,7 +548,7 @@ export default function Inventory() {
       }
 
       toast.success('Inventory auto-filled successfully');
-      fetchInventory(); // Refresh the inventory
+      await initializeData();
     } catch (error) {
       console.error('Error auto-saving inventory:', error);
       toast.error('Failed to auto-save inventory');
@@ -705,7 +738,7 @@ export default function Inventory() {
       }
 
       // Refresh the inventory display
-      await fetchInventory();
+      await initializeData();
 
       if (!hasError) {
         toast.success(`Completed inventory update for ${brand.brand_name}`);
@@ -748,6 +781,33 @@ export default function Inventory() {
     return (
       <div className="flex items-center justify-center h-full">
         <p className="text-gray-500">Please select a bar first</p>
+      </div>
+    );
+  }
+
+  if (initialLoading) {
+    return (
+      <div className="container mx-auto px-4 py-8">
+        <div className="flex flex-col items-center justify-center min-h-[400px] bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8">
+          <div className="w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-lg font-semibold text-gray-700 dark:text-gray-200">Loading Inventory</div>
+              <div className="text-sm text-gray-500 dark:text-gray-400">{loadingProgress}%</div>
+            </div>
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mb-6">
+              <div 
+                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                style={{ width: `${loadingProgress}%` }}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Please wait while we load your inventory data...
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

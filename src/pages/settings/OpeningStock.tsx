@@ -71,11 +71,13 @@ export default function OpeningStock() {
   const { selectedBar } = useBar();
   const [activeTab, setActiveTab] = useState<'add' | 'view'>('add');
   const [date, setDate] = useState<string>('');
+  const [initialLoading, setInitialLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingBrands, setSavingBrands] = useState<{ [key: number]: boolean }>({});
   const [brands, setBrands] = useState<Brand[]>([]);
   const [openingStock, setOpeningStock] = useState<OpeningStockItem[]>([]);
+  const [loadingProgress, setLoadingProgress] = useState(0);
   
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -111,16 +113,109 @@ export default function OpeningStock() {
       // Set the date to the bar's financial year start date
       setDate(format(new Date(selectedBar.financial_year_start), 'yyyy-MM-dd'));
       
-      ensureBarAccess(selectedBar.id.toString()).then(hasAccess => {
-        if (hasAccess) {
-          fetchBrands();
-          fetchOpeningStock();
-        } else {
+      const initializeData = async () => {
+        setInitialLoading(true);
+        setLoadingProgress(0);
+        
+        const hasAccess = await ensureBarAccess(selectedBar.id.toString());
+        if (!hasAccess) {
           toast.error('Failed to set up bar access');
+          setInitialLoading(false);
+          return;
         }
-      });
+
+        try {
+          // First get the total count of brands
+          const { count, error: countError } = await supabase
+            .from('brands')
+            .select('*', { count: 'exact', head: true });
+
+          if (countError) throw countError;
+          if (!count) {
+            toast.error('No brands found');
+            setInitialLoading(false);
+            return;
+          }
+
+          // Calculate number of pages needed (1000 items per page - Supabase limit)
+          const pageSize = 1000;
+          const totalPages = Math.ceil(count / pageSize);
+          let allBrands: Brand[] = [];
+
+          // Show initial loading toast
+          toast.loading(`Loading brands...`, { id: 'loading-brands' });
+
+          // Fetch all brands in chunks
+          for (let page = 0; page < totalPages; page++) {
+            const from = page * pageSize;
+            const to = from + pageSize - 1;
+
+            const { data: brandsPage, error: brandsError } = await supabase
+              .from('brands')
+              .select('*')
+              .range(from, to);
+
+            if (brandsError) {
+              toast.error(`Error loading brands`, { id: 'loading-brands' });
+              throw brandsError;
+            }
+
+            if (brandsPage) {
+              allBrands = [...allBrands, ...brandsPage];
+              // Update progress
+              const progress = Math.round(((page + 1) / totalPages) * 100);
+              setLoadingProgress(progress);
+            }
+          }
+
+          // Sort all brands by name
+          allBrands.sort((a, b) => a.brand_name.localeCompare(b.brand_name));
+          setBrands(allBrands);
+
+          // Fetch opening stock data
+          const { data: existingStock, error: stockError } = await supabase
+            .from('opening_stock')
+            .select('*')
+            .eq('bar_id', selectedBar.id)
+            .eq('financial_year_start', date);
+
+          if (stockError) throw stockError;
+
+          // Create a map of existing opening stock quantities
+          const existingStockMap = new Map(
+            existingStock?.map(item => [item.brand_id, item.opening_qty]) || []
+          );
+
+          // Create the opening stock array with saved quantities
+          const stockItems = allBrands.map((brand) => ({
+            brand_id: brand.id,
+            brand_name: brand.brand_name,
+            item_code: brand.item_code,
+            sizes: brand.sizes,
+            mrp: brand.mrp,
+            category: brand.category,
+            opening_qty: 0,
+            saved_qty: existingStockMap.get(brand.id) || 0,
+          }));
+
+          // Filter items with saved quantities for the saved stock view
+          const savedItems = stockItems.filter(item => item.saved_qty > 0);
+
+          setOpeningStock(stockItems);
+          setSavedOpeningStock(savedItems);
+          toast.success('Successfully loaded all brands', { id: 'loading-brands' });
+
+        } catch (error) {
+          console.error('Error initializing data:', error);
+          toast.error('Failed to load brands and opening stock');
+        } finally {
+          setInitialLoading(false);
+        }
+      };
+
+      initializeData();
     }
-  }, [selectedBar]);
+  }, [selectedBar, date]);
   
   // Effect for filtering and pagination
   useEffect(() => {
@@ -158,107 +253,6 @@ export default function OpeningStock() {
     }
   }, [openingStock, searchQuery, categoryFilter, itemsPerPage, selectedBar]);
 
-  // Modify fetchOpeningStock to also set savedOpeningStock
-  const fetchOpeningStock = async () => {
-    if (!selectedBar || !date) return;
-
-    setLoading(true);
-    try {
-      // First get the total count of brands
-      const { count, error: countError } = await supabase
-        .from('brands')
-        .select('*', { count: 'exact', head: true });
-
-      if (countError) throw countError;
-      if (!count) {
-        toast.error('No brands found');
-        return;
-      }
-
-      // Calculate number of pages needed (1000 items per page - Supabase limit)
-      const pageSize = 1000;
-      const totalPages = Math.ceil(count / pageSize);
-      let allBrands: Brand[] = [];
-
-      // Show initial loading toast
-      toast.loading(`Fetching ${count} brands in ${totalPages} chunks...`, { id: 'loading-brands' });
-
-      // Fetch all brands in chunks
-      for (let page = 0; page < totalPages; page++) {
-        const from = page * pageSize;
-        const to = from + pageSize - 1;
-
-        const { data: brandsPage, error: brandsError } = await supabase
-        .from('brands')
-        .select('*')
-          .range(from, to);
-
-        if (brandsError) {
-          toast.error(`Error fetching chunk ${page + 1}/${totalPages}`, { id: 'loading-brands' });
-          throw brandsError;
-        }
-
-        if (brandsPage) {
-          allBrands = [...allBrands, ...brandsPage];
-          // Update progress
-          const progress = Math.round(((page + 1) / totalPages) * 100);
-          toast.loading(`Loaded ${allBrands.length}/${count} brands (${progress}%)`, { id: 'loading-brands' });
-        }
-      }
-
-      // Sort all brands by name after fetching everything
-      allBrands.sort((a, b) => a.brand_name.localeCompare(b.brand_name));
-
-      // Then fetch existing opening stock for the date
-      const { data: existingStock, error: stockError } = await supabase
-        .from('opening_stock')
-        .select('*')
-        .eq('bar_id', selectedBar.id)
-        .eq('financial_year_start', date);
-
-      if (stockError) throw stockError;
-
-      // Create a map of existing opening stock quantities
-      const existingStockMap = new Map(
-        existingStock?.map(item => [item.brand_id, item.opening_qty]) || []
-      );
-
-      // Create the opening stock array with saved quantities
-      const stockItems = allBrands.map((brand) => ({
-        brand_id: brand.id,
-        brand_name: brand.brand_name,
-        item_code: brand.item_code,
-        sizes: brand.sizes,
-        mrp: brand.mrp,
-        category: brand.category,
-        opening_qty: 0,
-        saved_qty: existingStockMap.get(brand.id) || 0,
-      }));
-
-      // Filter items with saved quantities for the saved stock view
-      const savedItems = stockItems.filter(item => item.saved_qty > 0);
-
-      setOpeningStock(stockItems);
-      setSavedOpeningStock(savedItems);
-      setBrands(allBrands);
-      toast.success(`Successfully loaded all ${allBrands.length} brands`, { id: 'loading-brands' });
-      
-      // If we didn't get all brands, show a warning
-      if (allBrands.length < count) {
-        toast(`Warning: Only loaded ${allBrands.length} out of ${count} brands. Some brands might be missing.`, {
-          icon: '⚠️',
-          style: { backgroundColor: '#fff7ed', color: '#9a3412', border: '1px solid #fdba74' }
-        });
-      }
-
-    } catch (error) {
-      console.error('Error fetching opening stock:', error);
-      toast.error('Failed to fetch opening stock');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Add effect for filtering saved stock
   useEffect(() => {
     let result = [...savedOpeningStock];
@@ -283,74 +277,6 @@ export default function OpeningStock() {
       setCurrentPage(1);
     }
   }, [savedOpeningStock, searchQuery, categoryFilter, itemsPerPage]);
-
-  const fetchBrands = async () => {
-    try {
-      setLoading(true);
-      
-      // First get the total count of brands
-      const { count, error: countError } = await supabase
-        .from('brands')
-        .select('*', { count: 'exact', head: true });
-
-      if (countError) throw countError;
-      if (!count) {
-        toast.error('No brands found');
-        return;
-      }
-
-      // Calculate number of pages needed (1000 items per page - Supabase limit)
-      const pageSize = 1000;
-      const totalPages = Math.ceil(count / pageSize);
-      let allBrands: Brand[] = [];
-
-      // Show initial loading toast
-      toast.loading(`Fetching ${count} brands in ${totalPages} chunks...`, { id: 'loading-brands' });
-
-      // Fetch all brands in chunks
-      for (let page = 0; page < totalPages; page++) {
-        const from = page * pageSize;
-        const to = from + pageSize - 1;
-
-        const { data: brandsPage, error: brandsError } = await supabase
-        .from('brands')
-        .select('*')
-          .range(from, to);
-
-        if (brandsError) {
-          toast.error(`Error fetching chunk ${page + 1}/${totalPages}`, { id: 'loading-brands' });
-          throw brandsError;
-        }
-
-        if (brandsPage) {
-          allBrands = [...allBrands, ...brandsPage];
-          // Update progress
-          const progress = Math.round(((page + 1) / totalPages) * 100);
-          toast.loading(`Loaded ${allBrands.length}/${count} brands (${progress}%)`, { id: 'loading-brands' });
-        }
-      }
-
-      // Sort all brands by name after fetching everything
-      allBrands.sort((a, b) => a.brand_name.localeCompare(b.brand_name));
-      
-      setBrands(allBrands);
-      toast.success(`Successfully loaded all ${allBrands.length} brands`, { id: 'loading-brands' });
-      
-      // If we didn't get all brands, show a warning
-      if (allBrands.length < count) {
-        toast(`Warning: Only loaded ${allBrands.length} out of ${count} brands. Some brands might be missing.`, {
-          icon: '⚠️',
-          style: { backgroundColor: '#fff7ed', color: '#9a3412', border: '1px solid #fdba74' }
-        });
-      }
-
-    } catch (error) {
-      console.error('Error fetching brands:', error);
-      toast.error('Failed to fetch brands');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleOpeningQtyChange = (brandId: number, value: string) => {
     const newQty = parseInt(value) || 0;
@@ -718,6 +644,33 @@ export default function OpeningStock() {
     return (
       <div className="flex items-center justify-center h-full">
         <p className="text-gray-500">Please select a bar first</p>
+      </div>
+    );
+  }
+
+  if (initialLoading) {
+    return (
+      <div className="container mx-auto px-4 py-8">
+        <div className="flex flex-col items-center justify-center min-h-[400px] bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8">
+          <div className="w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-lg font-semibold text-gray-700 dark:text-gray-200">Loading Brands</div>
+              <div className="text-sm text-gray-500 dark:text-gray-400">{loadingProgress}%</div>
+            </div>
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mb-6">
+              <div 
+                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                style={{ width: `${loadingProgress}%` }}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Please wait while we load all brands and opening stock data...
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
